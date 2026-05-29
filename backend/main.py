@@ -33,6 +33,8 @@ class TelemetryState:
 
 state = TelemetryState()
 subscribers: set[asyncio.Queue[str]] = set()
+chart_samples: list[dict[str, Any]] = []
+speed_samples: list[float] = []
 slot_samples: dict[int, tuple[int, int, float]] = {}
 slot_context: dict[int, tuple[int, int, int]] = {}
 last_prompt_tokens_total = 0
@@ -395,6 +397,8 @@ def public_state() -> dict[str, Any]:
         "status": state.status,
         "llama": state.llama,
         "gpu": state.gpu,
+        "chartSamples": chart_samples,
+        "speedSamples": speed_samples,
         "config": {
             "backendPort": BACKEND_PORT,
             "llamaMetricsUrl": LLAMA_METRICS_URL,
@@ -432,6 +436,15 @@ async def poll_loop() -> None:
         state.llama = llama
         state.gpu = gpu
         state.status = compute_status(llama)
+        chart_samples.append({
+            "time": state.updated_at,
+            "utilization": gpu.get("utilization", 0),
+            "temperature": gpu.get("temperature", 0),
+        })
+        del chart_samples[:-60]
+        if state.status == "Generating" and llama.get("currentGenerationSpeed", 0) > 0:
+            speed_samples.append(llama["currentGenerationSpeed"])
+            del speed_samples[:-300]
         await publish(public_state())
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 

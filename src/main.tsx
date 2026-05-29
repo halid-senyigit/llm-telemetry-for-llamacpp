@@ -37,6 +37,8 @@ type Telemetry = {
   status: "Generating" | "Idle" | "Offline";
   llama: LlamaStatus;
   gpu: GpuStatus;
+  chartSamples?: Sample[];
+  speedSamples?: number[];
 };
 
 type Sample = {
@@ -217,18 +219,28 @@ function App() {
   useEffect(() => {
     let averageTimer: number | undefined;
     let pendingAverage = fallbackTelemetry.llama.averageGenerationSpeed;
+    let isFirstMessage = true;
 
     const applyTelemetry = (next: Telemetry) => {
       setTelemetry(next);
       pendingAverage = next.llama.averageGenerationSpeed;
-      setSamples((existing) => [
-        ...existing.slice(-59),
-        {
+      if (isFirstMessage && next.speedSamples && next.speedSamples.length > 0) {
+        const avg = next.speedSamples.reduce((a, b) => a + b, 0) / next.speedSamples.length;
+        setDisplayAverageGenerationSpeed(Math.round(avg * 100) / 100);
+        pendingAverage = Math.round(avg * 100) / 100;
+      }
+      isFirstMessage = false;
+      setSamples((existing) => {
+        const newSample: Sample = {
           time: next.updatedAt,
           utilization: next.gpu.utilization,
           temperature: next.gpu.temperature,
-        },
-      ]);
+        };
+        if (existing.length === 0 && next.chartSamples && next.chartSamples.length > 0) {
+          return [...next.chartSamples, newSample].slice(-60);
+        }
+        return [...existing.slice(-59), newSample];
+      });
     };
 
     averageTimer = window.setInterval(() => {
