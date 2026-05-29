@@ -6,30 +6,34 @@ Local-only telemetry dashboard for a `llama.cpp` server and NVIDIA GPU stats.
 
 ## Features
 
-- Polls `llama.cpp` Prometheus metrics from `http://localhost:6688/metrics`
-- Reads live slot state from `http://localhost:6688/slots`
-- Reads NVIDIA telemetry with `nvidia-smi`
-- Streams dashboard updates with Server-Sent Events
-- Shows generation speed, prompt speed, estimated last context usage, request/queue state, GPU usage, temperature, power, clocks, and VRAM
-- Runs on `127.0.0.1` only by default
+- **Live GPU chart** — real-time utilization and temperature history (last 60 samples, persisted across page refresh)
+- **Generation speed** — current and average tok/s, with backend buffer (last 300 active samples) restored on refresh
+- **Prompt speed** — tokens/second during prompt processing
+- **Context usage** — estimated KV cache occupancy from prompt + decoded tokens
+- **Request queue** — active and queued requests
+- **GPU details** — VRAM, power draw, core/memory clocks, pstate
+- **Server-Sent Events** — low-latency streaming updates with automatic fallback polling
+- **Graceful offline** — dashboard stays up and shows meaningful states if `llama.cpp` or `nvidia-smi` is unavailable
 
 ## Requirements
 
-- Windows
-- Node.js 20+
-- Python 3.11+
-- NVIDIA driver with `nvidia-smi` available on `PATH`
-- `llama.cpp` server running with `--metrics`
+- **Windows** (PowerShell 5.1+)
+- **Node.js** 20+
+- **Python** 3.11+
+- **NVIDIA driver** with `nvidia-smi` available on `PATH`
+- **llama.cpp server** running with `--metrics` flag
 
-Example `llama-server` requirement:
+### Start llama.cpp with metrics
 
 ```powershell
 .\llama-server.exe --host 127.0.0.1 --port 6688 --metrics ...
 ```
 
+The `--metrics` flag is required. The dashboard reads from `http://localhost:6688/metrics` and `/slots` by default.
+
 ## Quick Start
 
-From PowerShell:
+From PowerShell, run:
 
 ```powershell
 .\scripts\run-local.ps1
@@ -37,51 +41,136 @@ From PowerShell:
 
 Then open:
 
-```text
+```
 http://127.0.0.1:5173
 ```
 
-The script installs missing Node/Python dependencies, sets local defaults, and starts both the backend and frontend.
+The script handles everything:
+1. Installs Node.js dependencies (`npm install`)
+2. Installs Python dependencies (`pip install -r requirements.txt`)
+3. Starts the backend (FastAPI + Uvicorn) and frontend (Vite) in parallel
 
 ## Manual Setup
 
+If you prefer to run things manually:
+
 ```powershell
+# 1. Install dependencies
 pip install -r requirements.txt
 npm install
+
+# 2. Start both servers
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`.
+This runs the backend (`python -m backend.run`) and frontend (`vite`) in parallel. Open `http://127.0.0.1:5173`.
+
+### Separate terminals
+
+```powershell
+# Terminal 1 — Backend
+python -m backend.run
+
+# Terminal 2 — Frontend
+npm run dev:frontend
+```
 
 ## Configuration
 
-PowerShell script parameters:
+### PowerShell script parameters
 
 ```powershell
 .\scripts\run-local.ps1 `
   -BackendPort 7171 `
   -FrontendPort 5173 `
-  -LlamaMetricsUrl "http://localhost:6688/metrics"
+  -LlamaMetricsUrl "http://localhost:6688/metrics" `
+  -ModelName "MyCustomModel"
 ```
 
-Environment variables:
+### Environment variables
 
-| Variable | Default |
-| --- | --- |
-| `BACKEND_PORT` | `7171` |
-| `FRONTEND_PORT` | `5173` |
-| `LLAMA_METRICS_URL` | `http://localhost:6688/metrics` |
-| `POLL_INTERVAL_SECONDS` | `0.1` |
-| `GPU_POLL_INTERVAL_SECONDS` | `1` |
-| `MODEL_NAME` | optional override; otherwise read from `llama.cpp /props` |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `BACKEND_PORT` | `7171` | Backend server port |
+| `FRONTEND_PORT` | `5173` | Vite dev server port |
+| `LLAMA_METRICS_URL` | `http://localhost:6688/metrics` | llama.cpp metrics endpoint |
+| `POLL_INTERVAL_SECONDS` | `0.1` | llama.cpp poll frequency |
+| `GPU_POLL_INTERVAL_SECONDS` | `1` | nvidia-smi poll frequency |
+| `MODEL_NAME` | *(auto-detected)* | Override model display name |
 
 ## API
 
-- `GET /api/status` returns the current normalized telemetry snapshot.
-- `GET /api/events` streams telemetry snapshots through SSE.
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/api/status` | `GET` | Current telemetry snapshot (JSON) |
+| `/api/events` | `GET` | SSE stream of telemetry snapshots |
+
+### Response format
+
+```json
+{
+  "updatedAt": 1710000000.0,
+  "status": "Generating",
+  "llama": {
+    "ok": true,
+    "model": "my-model.gguf",
+    "currentGenerationSpeed": 45.2,
+    "averageGenerationSpeed": 42.8,
+    "totalGenerationTokens": 1234,
+    "promptSpeed": 120.0,
+    "contextUsed": 4096,
+    "contextTotal": 8192,
+    "requestsProcessing": 1,
+    "requestsQueued": 0
+  },
+  "gpu": {
+    "ok": true,
+    "name": "NVIDIA GeForce RTX 4090",
+    "utilization": 85,
+    "vramUsed": 18432,
+    "vramTotal": 24576,
+    "temperature": 72,
+    "powerDraw": 320.5,
+    "powerLimit": 450,
+    "coreClock": 2520,
+    "memoryClock": 3840,
+    "pstate": "P2"
+  },
+  "chartSamples": [
+    { "time": 1710000000.0, "utilization": 85, "temperature": 72 }
+  ],
+  "speedSamples": [45.2, 44.8, 46.1],
+  "config": {
+    "backendPort": 7171,
+    "llamaMetricsUrl": "http://localhost:6688/metrics",
+    "pollIntervalSeconds": 0.1,
+    "gpuPollIntervalSeconds": 1
+  }
+}
+```
+
+## Architecture
+
+```
+  llama.cpp server              Backend (FastAPI)            Frontend (React)
+  :6688                         :7171                        :5173
+  ┌──────────────┐              ┌──────────────┐            ┌──────────────┐
+  │ /metrics     │──http──poll──▶│              │            │              │
+  │ /slots       │◀──http──poll──│  poll_loop() │──SSE──────▶│  Live chart  │
+  │              │              │              │            │  Metrics UI  │
+  └──────────────┘              │  /api/status │            │              │
+                                │  /api/events │            └──────────────┘
+                                └──────┬───────┘
+                                       │ subprocess
+                                ┌──────▼───────┐
+                                │  nvidia-smi  │
+                                └──────────────┘
+```
+
+- **Backend** polls `llama.cpp` (`/metrics`, `/slots`) every 100ms and `nvidia-smi` every 1s, buffers chart and speed samples in memory, and streams snapshots via SSE
+- **Frontend** subscribes to SSE, renders live chart and metrics, with automatic fallback to polling if SSE drops
 
 ## Notes
 
-`Last context usage est.` is an estimate. `llama.cpp` exposes slot capacity through `/slots.n_ctx`, but the current KV/context occupancy is not directly exposed by `/metrics` in the tested build. The dashboard estimates last context usage from prompt token deltas plus decoded slot tokens.
-
-If `llama.cpp` or `nvidia-smi` is unavailable, the dashboard stays up and shows meaningful fallback/offline states.
+- `Last context usage est.` is an estimate derived from prompt token deltas plus decoded slot tokens. `llama.cpp` exposes slot capacity through `/slots.n_ctx` but does not directly expose current KV cache occupancy in `/metrics`.
+- Chart and speed samples are stored in backend memory and survive page refreshes, but are lost if the backend process restarts.
