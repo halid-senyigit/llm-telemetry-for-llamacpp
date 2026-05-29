@@ -6,14 +6,12 @@ Local-only telemetry dashboard for a `llama.cpp` server and NVIDIA GPU stats.
 
 ## Features
 
-- **Live GPU chart** — real-time utilization and temperature history (last 60 samples, persisted across page refresh)
-- **Generation speed** — current and average tok/s, with backend buffer (last 300 active samples) restored on refresh
-- **Prompt speed** — tokens/second during prompt processing
-- **Context usage** — estimated KV cache occupancy from prompt + decoded tokens
-- **Request queue** — active and queued requests
-- **GPU details** — VRAM, power draw, core/memory clocks, pstate
-- **Server-Sent Events** — low-latency streaming updates with automatic fallback polling
-- **Graceful offline** — dashboard stays up and shows meaningful states if `llama.cpp` or `nvidia-smi` is unavailable
+- **Live GPU Chart** — real-time usage and temperature, persists across page refresh
+- **Speed Tracking** — current, average generation speed and prompt processing speed
+- **Context Usage** — estimated model memory (KV cache) occupancy
+- **Request Status** — active and queued generation requests
+- **GPU Details** — VRAM, power draw, clock speeds, and temperature
+- **Always On** — dashboard stays up even if llama.cpp or GPU is temporarily unavailable
 
 ## Requirements
 
@@ -152,19 +150,41 @@ npm run dev:frontend
 ## Architecture
 
 ```
-  llama.cpp server              Backend (FastAPI)            Frontend (React)
-  :6688                         :7171                        :5173
-  ┌──────────────┐              ┌──────────────┐            ┌──────────────┐
-  │ /metrics     │──http──poll──▶│              │            │              │
-  │ /slots       │◀──http──poll──│  poll_loop() │──SSE──────▶│  Live chart  │
-  │              │              │              │            │  Metrics UI  │
-  └──────────────┘              │  /api/status │            │              │
-                                │  /api/events │            └──────────────┘
-                                └──────┬───────┘
-                                       │ subprocess
-                                ┌──────▼───────┐
-                                │  nvidia-smi  │
-                                └──────────────┘
+┌────────────────────┐
+│ llama.cpp server   │
+│ Port: 6688         │
+│                    │
+│ Endpoints:         │
+│  - /metrics        │
+│  - /slots          │
+└─────────┬──────────┘
+          │
+          │ HTTP polling
+          ▼
+┌────────────────────┐
+│ Backend (FastAPI)  │
+│ Port: 7171         │
+│                    │
+│ poll_loop()        │
+│ /api/status        │
+│ /api/events        │
+└──────┬────────┬────┘
+       │        │
+       │        │ SSE
+       │        ▼
+       │   ┌────────────────────┐
+       │   │ Frontend (React)   │
+       │   │ Port: 5173         │
+       │   │                    │
+       │   │ Live chart         │
+       │   │ Metrics UI         │
+       │   └────────────────────┘
+       │
+       │ subprocess
+       ▼
+┌────────────────────┐
+│ nvidia-smi         │
+└────────────────────┘
 ```
 
 - **Backend** polls `llama.cpp` (`/metrics`, `/slots`) every 100ms and `nvidia-smi` every 1s, buffers chart and speed samples in memory, and streams snapshots via SSE
