@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -16,11 +17,15 @@ from fastapi.responses import StreamingResponse
 
 
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "7171"))
-LLAMA_METRICS_URL = os.getenv("LLAMA_METRICS_URL", "http://localhost:6688/metrics")
+LLAMA_METRICS_URL = os.getenv("LLAMA_METRICS_URL", "http://127.0.0.1:53071/metrics")
+# When LLAMA_METRICS_URL is not pinned by the user, follow the running llama-server's --port flag.
+AUTO_DETECT_LLAMA_PORT = "LLAMA_METRICS_URL" not in os.environ
 POLL_INTERVAL_SECONDS = float(os.getenv("POLL_INTERVAL_SECONDS", "0.1"))
 GPU_POLL_INTERVAL_SECONDS = float(os.getenv("GPU_POLL_INTERVAL_SECONDS", "1"))
+PORT_CHECK_INTERVAL_SECONDS = 5.0
 
 METRIC_NAME_RE = re.compile(r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{[^{}]*\})?\s+([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)$")
+PORT_FLAG_RE = re.compile(r"--port[= ](\d+)")
 
 
 @dataclass
@@ -45,6 +50,7 @@ last_generation_average = 0.0
 last_gpu_poll = 0.0
 gpu_cache: dict[str, Any] | None = None
 last_props_poll = 0.0
+last_port_check = 0.0
 model_name_cache = os.getenv("MODEL_NAME", "llama.cpp model")
 app = FastAPI(title="LLMBrief.local telemetry", version="0.1.0")
 
@@ -124,6 +130,91 @@ def slots_url() -> str:
 
 def props_url() -> str:
     return LLAMA_METRICS_URL.rsplit("/", 1)[0] + "/props"
+
+def _parse_port(command_line: str) -> int | None:
+    match = PORT_FLAG_RE.search(command_line)
+    return int(match.group(1)) if match else None
+
+
+def _query_windows_command_lines() -> list[str]:
+    query = (
+        "(Get-CimInstance Win32_Process -Filter \"name LIKE 'llama-server%'\""
+        " | Sort-Object ProcessId -Descending).CommandLine"
+    )
+    command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", query]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
+async def _windows_command_lines() -> list[str]:
+    return await asyncio.to_thread(_query_windows_command_lines)
+
+
+def _linux_command_lines() -> list[str]:
+    try:
+        pids = sorted((pid for pid in os.listdir("/proc") if pid.isdigit()), reverse=True)
+    except OSError:
+        return []
+    lines: list[str] = []
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as handle:
+                argv = handle.read().decode(errors="ignore").split("\0")
+        except OSError:
+            continue
+        if any(os.path.basename(arg).startswith("llama-server") for arg in argv):
+            lines.append(" ".join(argv))
+    return lines
+
+
+async def detect_llama_port() -> int | None:
+    """Find the port of a running llama-server by reading its --port flag (default 8080)."""
+    if sys.platform == "win32":
+        command_lines = await _windows_command_lines()
+    elif os.path.isdir("/proc"):
+        command_lines = await asyncio.to_thread(_linux_command_lines)
+    else:
+        return None
+    if not command_lines:
+        return None
+
+    candidates = [(line, _parse_port(line) or 8080) for line in command_lines]
+    model_hint = os.getenv("MODEL_NAME", "").strip().lower()
+    if model_hint and len(candidates) > 1:
+        for line, port in candidates:
+            if model_hint in line.lower():
+                return port
+    return candidates[0][1]
+
+
+async def refresh_llama_url() -> None:
+    global LLAMA_METRICS_URL, last_port_check
+
+    if not AUTO_DETECT_LLAMA_PORT:
+        return
+    now = time.time()
+    if now - last_port_check < PORT_CHECK_INTERVAL_SECONDS:
+        return
+    last_port_check = now
+
+    port = await detect_llama_port()
+    if port is None:
+        return
+    url = f"http://127.0.0.1:{port}/metrics"
+    if url != LLAMA_METRICS_URL:
+        print(f"LLMBrief.local: llama.cpp metrics endpoint -> {url}")
+        LLAMA_METRICS_URL = url
 
 
 def clean_model_name(value: str) -> str:
@@ -424,6 +515,7 @@ async def poll_loop() -> None:
     global gpu_cache, last_gpu_poll
 
     while True:
+        await refresh_llama_url()
         now = time.time()
         if gpu_cache is None or now - last_gpu_poll >= GPU_POLL_INTERVAL_SECONDS:
             llama, gpu = await asyncio.gather(fetch_llama(), fetch_gpu())

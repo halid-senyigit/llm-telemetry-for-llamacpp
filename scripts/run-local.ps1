@@ -1,7 +1,7 @@
 param(
   [int]$BackendPort = 7171,
   [int]$FrontendPort = 5173,
-  [string]$LlamaMetricsUrl = "http://localhost:6688/metrics",
+  [string]$LlamaMetricsUrl = "",
   [string]$ModelName = ""
 )
 
@@ -11,7 +11,11 @@ Set-Location $repoRoot
 
 $env:BACKEND_PORT = "$BackendPort"
 $env:FRONTEND_PORT = "$FrontendPort"
-$env:LLAMA_METRICS_URL = $LlamaMetricsUrl
+if ($LlamaMetricsUrl) {
+  $env:LLAMA_METRICS_URL = $LlamaMetricsUrl
+} else {
+  Remove-Item Env:\LLAMA_METRICS_URL -ErrorAction SilentlyContinue
+}
 if ($ModelName) {
   $env:MODEL_NAME = $ModelName
 } else {
@@ -35,6 +39,10 @@ if missing:
 Write-Host "LLMBrief.local starting..."
 Write-Host "Frontend: http://127.0.0.1:$FrontendPort"
 Write-Host "Backend:  http://127.0.0.1:$BackendPort"
-Write-Host "llama.cpp metrics: $LlamaMetricsUrl"
+if ($LlamaMetricsUrl) {
+  Write-Host "llama.cpp metrics: $LlamaMetricsUrl"
+} else {
+  Write-Host "llama.cpp metrics: auto-detected from running llama-server (--port)"
+}
 
 npm run dev

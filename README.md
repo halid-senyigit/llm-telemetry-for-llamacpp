@@ -24,10 +24,10 @@ Local-only telemetry dashboard for a `llama.cpp` server and NVIDIA GPU stats.
 ### Start llama.cpp with metrics
 
 ```powershell
-.\llama-server.exe --host 127.0.0.1 --port 6688 --metrics ...
+\llama-server.exe --host 127.0.0.1 --port <any-port> --metrics ...
 ```
 
-The `--metrics` flag is required. The dashboard reads from `http://localhost:6688/metrics` and `/slots` by default.
+The `--metrics` flag is required. Any port works — when `LLAMA_METRICS_URL` is not set, the backend finds the running `llama-server` process and reads its `--port` value (re-checked every 5 seconds), then polls `/metrics` and `/slots`.
 
 ## Quick Start
 
@@ -81,7 +81,7 @@ npm run dev:frontend
 .\scripts\run-local.ps1 `
   -BackendPort 7171 `
   -FrontendPort 5173 `
-  -LlamaMetricsUrl "http://localhost:6688/metrics" `
+  -LlamaMetricsUrl "http://127.0.0.1:53071/metrics" `
   -ModelName "MyCustomModel"
 ```
 
@@ -91,7 +91,7 @@ npm run dev:frontend
 | --- | --- | --- |
 | `BACKEND_PORT` | `7171` | Backend server port |
 | `FRONTEND_PORT` | `5173` | Vite dev server port |
-| `LLAMA_METRICS_URL` | `http://localhost:6688/metrics` | llama.cpp metrics endpoint |
+| `LLAMA_METRICS_URL` | *(auto-detected)* | llama.cpp metrics endpoint. When unset, the running server's `--port` is detected automatically; setting it pins the URL and disables auto-detection |
 | `POLL_INTERVAL_SECONDS` | `0.1` | llama.cpp poll frequency |
 | `GPU_POLL_INTERVAL_SECONDS` | `1` | nvidia-smi poll frequency |
 | `MODEL_NAME` | *(auto-detected)* | Override model display name |
@@ -140,7 +140,7 @@ npm run dev:frontend
   "speedSamples": [45.2, 44.8, 46.1],
   "config": {
     "backendPort": 7171,
-    "llamaMetricsUrl": "http://localhost:6688/metrics",
+    "llamaMetricsUrl": "http://127.0.0.1:53071/metrics",
     "pollIntervalSeconds": 0.1,
     "gpuPollIntervalSeconds": 1
   }
@@ -152,7 +152,7 @@ npm run dev:frontend
 ```
 ┌────────────────────┐
 │ llama.cpp server   │
-│ Port: 6688         │
+│ Port: 53071        │
 │                    │
 │ Endpoints:         │
 │  - /metrics        │
